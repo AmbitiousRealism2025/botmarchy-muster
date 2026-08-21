@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Focus (or launch) the Botmarchy window via Hyprland.
+# Exit codes: 0 = focused or launched; 1 = nothing to focus and no launcher.
 set -uo pipefail
 
 # Dev-mode window class is 'hermes' (packaged builds may use 'botmarchy').
@@ -16,9 +17,22 @@ for c in json.load(sys.stdin):
   fi
 done
 
-# Not running: launch via the dev launcher if present (packaged installs
-# substitute their .desktop exec).
-if [[ -x "$HOME/coding-projects/botmarchy/scripts/dev/launch-local.sh" ]]; then
-  (setsid "$HOME/coding-projects/botmarchy/scripts/dev/launch-local.sh" \
-     >/tmp/botmarchy-dev.log 2>&1 &)
+# Not running. Launch the installed desktop entry if present (packaged
+# installs); fall back to the dev launcher (source checkouts). A plain exit-0
+# no-op would silently break Muster's engage action for packaged users
+# (PB-7 review F4), so failure to launch is a real failure.
+entry_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+for entry in dev.botmarchy.Botmarchy Botmarchy; do
+  if [[ -f "$entry_dir/$entry.desktop" ]] && command -v gtk-launch >/dev/null 2>&1; then
+    gtk-launch "$entry" >/dev/null 2>&1 && exit 0
+  fi
+done
+
+launcher="$HOME/coding-projects/botmarchy/scripts/dev/launch-local.sh"
+if [[ -x "$launcher" ]]; then
+  (setsid "$launcher" >/tmp/botmarchy-dev.log 2>&1 &)
+  exit 0
 fi
+
+echo "botmarchy-focus: no Botmarchy window and no launcher (desktop entry or dev checkout)" >&2
+exit 1

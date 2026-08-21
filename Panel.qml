@@ -180,7 +180,7 @@ Panel {
     }
     if (bots.length === 0) lines.push("(no bots on the gateway yet)")
     lines.push("─")
-    lines.push("click: roster · right-click: refresh")
+    lines.push("click: roster · middle-click: jump to Botmarchy · right-click: refresh")
     return lines.join("\n")
   }
 
@@ -201,6 +201,9 @@ Panel {
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) {
         root.refresh()
+      } else if (buttonCode === Qt.MiddleButton) {
+        // Jump straight to the app (README contract): focus-or-launch.
+        Quickshell.execDetached(["botmarchy-focus"])
       } else {
         root.toggle()
       }

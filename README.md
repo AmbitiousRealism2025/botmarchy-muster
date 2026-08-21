@@ -2,8 +2,9 @@
 
 Your Botmarchy bot court at a glance: a roster roll call in the Omarchy bar.
 Hover for per-bot activity, click for the roster window, middle-click to jump
-straight to the [Botmarchy](https://github.com/AmbitiousRealism2025/botmarchy)
-app, right-click to refresh.
+straight to the
+[Botmarchy](https://github.com/AmbitiousRealism2025/botmarchy) app, right-click
+to refresh.
 
 Works against a self-hosted Botmarchy/Hermes gateway on a machine you reach
 over SSH — no cloud service involved.
@@ -37,8 +38,10 @@ Or run `botmarchy-muster` once for the guided setup. State lives in
 ## What talks to what
 
 - The **bar widget** (Panel.qml) polls `ssh <target> botmarchy-muster-snapshot`
-  every `intervalSec`, reading a small JSON roster snapshot. Cache
-  (`~/.cache/botmarchy/muster-state.json`) covers gateway-offline moments.
+  every `intervalSec`, reading a small JSON roster snapshot. The last good
+  snapshot stays on screen when the gateway is unreachable (in the panel's
+  memory — it does not persist across a shell restart; the first poll after
+  a restart starts fresh).
 - **`botmarchy-muster-snapshot`** runs ON the gateway (installed by
   `install.sh --box`): reads the Hermes profiles' SQLite state directly —
   no HTTP, no session token, no dashboard dependency.
@@ -60,6 +63,8 @@ bind = SUPER ALT, B, exec, botmarchy-muster
 ```sh
 omarchy plugin remove dev.botmarchy.muster
 rm -f ~/.local/bin/botmarchy-muster ~/.local/bin/botmarchy-focus
+# If install.sh --box was used, also remove the gateway-side helper:
+#   ssh user@your-gateway 'rm -f ~/.local/bin/botmarchy-muster-snapshot'
 ```
 
 ## Lineage

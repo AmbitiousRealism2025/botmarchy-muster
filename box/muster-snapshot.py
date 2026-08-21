@@ -4,6 +4,9 @@
 Prints one JSON line summarizing every Hermes profile: enough for the
 status-bar glance and the roster window's engage/skip decision.
 
+No network access of any kind: profiles' state.db opened read-only (URI
+mode=ro, 2s lock timeout), plus a last-run marker under ~/.cache.
+
 Data source is the profiles' state.db (read-only, no HTTP, no session
 token, no dashboard dependency). Working-state is a message-tail
 heuristic: the newest message being a tool result or a very fresh user
@@ -13,7 +16,6 @@ finish_reason 'stop' means idle.
 Output contract (consumed by muster.sh / botmarchy-muster):
 {
   "generated": <epoch>,
-  "gateway": {"running": bool|null},
   "bots": [{
       "name": str,
       "last_role": str|null,
@@ -121,16 +123,6 @@ def summarize_profile(name: str, home: Path) -> dict:
     return bot
 
 
-def gateway_running() -> bool | None:
-    try:
-        import urllib.request
-
-        with urllib.request.urlopen("http://127.0.0.1:9119/api/status", timeout=1.5) as resp:
-            return bool(json.load(resp).get("gateway_running"))
-    except Exception:
-        return None
-
-
 def main() -> int:
     os.environ.setdefault("HERMES_HOME", str(Path.home() / ".hermes"))
     try:
@@ -142,7 +134,7 @@ def main() -> int:
     bots.sort(key=lambda b: (not b["working"], -(b["last_activity"] or 0)))
 
     payload = json.dumps(
-        {"generated": time.time(), "gateway": {"running": gateway_running()}, "bots": bots},
+        {"generated": time.time(), "bots": bots},
         separators=(",", ":"),
     )
 

@@ -10,32 +10,90 @@
 #                            (only with --box user@host; skipped otherwise)
 #
 # Symlinks, not copies: `omarchy plugin update` refreshes the plugin dir and
-# every linked script follows. Idempotent — re-run any time.
+# every linked script follows. Idempotent — re-run any time. Pre-existing
+# files that are not ours are never touched (PB-7 review F7).
 
 set -euo pipefail
 
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_BIN="$HOME/.local/bin"
 
+usage() {
+  echo "usage: install.sh [--box user@host]" >&2
+  exit 1
+}
+
+# ── Validate arguments BEFORE touching anything ────────────────────────────
+box_target=""
+while (( $# > 0 )); do
+  case "$1" in
+    --box)
+      [[ -n "${2:-}" ]] || usage
+      box_target="$2"
+      shift 2
+      ;;
+    *)
+      usage
+      ;;
+  esac
+done
+
+if [[ -n "$box_target" ]] && ! [[ "$box_target" =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$ ]]; then
+  echo "install.sh: --box expects user@host, got '$box_target'" >&2
+  exit 1
+fi
+
+for script in botmarchy-muster botmarchy-focus; do
+  if [[ ! -f "$PLUGIN_DIR/bin/$script" ]]; then
+    echo "install.sh: missing $PLUGIN_DIR/bin/$script — incomplete plugin?" >&2
+    exit 1
+  fi
+done
+
+# ── Local symlinks (idempotent; never clobber foreign files) ───────────────
 mkdir -p "$LOCAL_BIN"
+
+link_owned() {
+  # Owned = absent, or a symlink into THIS plugin dir (a previous install).
+  local target="$1" name
+  name="$(basename "$target")"
+  [[ ! -e "$target" ]] && return 0
+  [[ -L "$target" ]] && [[ "$(readlink -f "$target" 2>/dev/null)" == "$PLUGIN_DIR/bin/$name" ]]
+}
 
 for script in botmarchy-muster botmarchy-focus; do
   target="$LOCAL_BIN/$script"
+
+  if ! link_owned "$target"; then
+    echo "install.sh: refusing to replace $target (not a previous Muster install)" >&2
+    exit 1
+  fi
+
   rm -f "$target"
   ln -s "$PLUGIN_DIR/bin/$script" "$target"
   echo "linked $target -> $PLUGIN_DIR/bin/$script"
 done
 
-# --box user@host: push the snapshot script to the gateway (idempotent).
-if [[ "${1:-}" == "--box" ]]; then
-  box="${2:?usage: install.sh [--box user@host]}"
-  ssh -o BatchMode=yes "$box" 'mkdir -p ~/.local/bin'
-  scp -q "$PLUGIN_DIR/box/muster-snapshot.py" "$box:~/.local/bin/botmarchy-muster-snapshot"
-  ssh -o BatchMode=yes "$box" 'chmod +x ~/.local/bin/botmarchy-muster-snapshot'
-  echo "installed botmarchy-muster-snapshot on $box"
-elif [[ $# -gt 0 ]]; then
-  echo "usage: install.sh [--box user@host]" >&2
-  exit 1
+# ── Gateway box (optional): same SSH options for ssh+scp, atomic install ──
+if [[ -n "$box_target" ]]; then
+  SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8)
+
+  if ! ssh "${SSH_OPTS[@]}" "$box_target" 'mkdir -p ~/.local/bin'; then
+    echo "install.sh: could not reach $box_target over SSH" >&2
+    exit 1
+  fi
+
+  # Upload to a temp path, then mv into place — a failed transfer must not
+  # truncate the working remote helper (PB-7 review F8).
+  remote_tmp="$(ssh "${SSH_OPTS[@]}" "$box_target" 'mktemp /tmp/muster-snapshot.XXXXXX')"
+  if ! scp -q -o BatchMode=yes -o ConnectTimeout=8 \
+    "$PLUGIN_DIR/box/muster-snapshot.py" "$box_target:$remote_tmp"; then
+    ssh "${SSH_OPTS[@]}" "$box_target" "rm -f '$remote_tmp'" || true
+    echo "install.sh: upload to $box_target failed" >&2
+    exit 1
+  fi
+  ssh "${SSH_OPTS[@]}" "$box_target" "chmod +x '$remote_tmp' && mv '$remote_tmp' ~/.local/bin/botmarchy-muster-snapshot"
+  echo "installed botmarchy-muster-snapshot on $box_target"
 fi
 
 echo
