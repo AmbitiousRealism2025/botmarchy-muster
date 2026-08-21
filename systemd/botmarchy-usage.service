@@ -1,0 +1,6 @@
+[Unit]
+Description=Botmarchy usage record refresh (Omarchy agents panel)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/botmarchy-usage-update

@@ -74,6 +74,15 @@ for script in botmarchy-muster botmarchy-focus botmarchy-usage-update; do
   echo "linked $target -> $PLUGIN_DIR/bin/$script"
 done
 
+# ── systemd user units (usage-record timer, PB-16 F1) ──────────────────────
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+if [[ -d "$PLUGIN_DIR/systemd" ]]; then
+  mkdir -p "$UNIT_DIR"
+  cp "$PLUGIN_DIR/systemd/botmarchy-usage.service" "$PLUGIN_DIR/systemd/botmarchy-usage.timer" "$UNIT_DIR/"
+  systemctl --user daemon-reload 2>/dev/null || true
+  echo "installed botmarchy-usage.timer (enable: systemctl --user enable --now botmarchy-usage.timer)"
+fi
+
 # ── Gateway box (optional): same SSH options for ssh+scp, atomic install ──
 if [[ -n "$box_target" ]]; then
   SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8)
