@@ -71,6 +71,27 @@ def display_title(home: Path, fallback: str) -> str:
     return title or fallback
 
 
+_HEX_RE = __import__("re").compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _avatar_meta(home: Path) -> dict | None:
+    """The app writes avatars to ui_meta['hermes-bots'] in profile.yaml
+    (shape + color; image/pet avatars are app-asset concepts the bar has no
+    pipeline for — shape chips only, MP-5)."""
+    try:
+        import yaml  # PyYAML ships with the Hermes runtime
+
+        meta = yaml.safe_load((home / "profile.yaml").read_text()) or {}
+        hb = (meta.get("ui_meta") or {}).get("hermes-bots") or {}
+        color = str(hb.get("color") or "")
+        shape = str(hb.get("shape") or "")
+        if _HEX_RE.match(color):
+            return {"color": color.lower(), "shape": shape or "circle"}
+    except Exception:
+        pass
+    return None
+
+
 def summarize_profile(name: str, home: Path) -> dict:
     bot = {
         "name": display_title(home, name),
@@ -79,6 +100,7 @@ def summarize_profile(name: str, home: Path) -> dict:
         "last_message": "",
         "last_activity": None,
         "working": False,
+        "avatar": _avatar_meta(home),
     }
     db_path = home / "state.db"
     if not db_path.exists():
@@ -123,7 +145,7 @@ def summarize_profile(name: str, home: Path) -> dict:
     return bot
 
 
-SNAPSHOT_VERSION = "0.1.5"
+SNAPSHOT_VERSION = "0.1.6"
 
 # Unread watermark (MP-4): the LAST activity epoch delivered per profile.
 # has_new = activity advanced past the watermark AND is fresher than a day

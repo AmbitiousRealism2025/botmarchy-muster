@@ -114,6 +114,15 @@ Panel {
     engage(selectedIndex)
   }
 
+  // Avatar chip corner radius by shape (MP-5): round-family shapes render
+  // as circles; square keeps corners; triangle/hexagon fall back to circle
+  // (radius-only approximation — full polygon parity isn't worth Canvas
+  // machinery at 14px, documented limitation).
+  function chipRadius(shape) {
+    if (shape === "square" || shape === "squircle") return Style.space(3)
+    return Style.space(7)
+  }
+
   function agoText(ts) {
     if (!ts) return "?"
     var s = Math.max(0, Math.floor(Date.now() / 1000 - ts))
@@ -382,6 +391,17 @@ Panel {
                 text: modelData.working ? "▶" : "●"
                 color: modelData.working ? Color.bar.active : root.dim
                 font.pixelSize: Style.font.body
+                anchors.verticalCenter: parent.verticalCenter
+              }
+              // Avatar chip (MP-5): the bot's own color from profile
+              // ui_meta — the roster reads as the same court as the app.
+              // Absent meta falls back to a muted chip so rows stay aligned.
+              Rectangle {
+                width: Style.space(14); height: Style.space(14)
+                radius: root.chipRadius(modelData.avatar ? modelData.avatar.shape : "")
+                color: modelData.avatar && modelData.avatar.color
+                  ? modelData.avatar.color
+                  : Qt.alpha(root.dim, 0.45)
                 anchors.verticalCenter: parent.verticalCenter
               }
               Text {
