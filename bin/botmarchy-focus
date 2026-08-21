@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Focus (or launch) the Botmarchy window via Hyprland.
+# With --bot <name>: engage that specific bot via the app's hermes:// deep
+# link (hermes://bot/<name>) — delivered by launching the app's desktop
+# entry WITH the URL (warm: Electron's single-instance lock forwards argv
+# to the running app, which focuses itself and selects the bot; cold: the
+# app queues the URL until the renderer is ready).
 # Exit codes: 0 = focused or launched; 1 = nothing to focus and no launcher.
 set -uo pipefail
 
@@ -8,34 +13,84 @@ set -uo pipefail
 # "bad option" (bit agent-launched contexts; harmless elsewhere).
 unset ELECTRON_RUN_AS_NODE
 
-# Dev-mode window class is 'hermes' (packaged builds may use 'botmarchy').
-for class in hermes botmarchy Botmarchy; do
-  addr=$(hyprctl -j clients 2>/dev/null | python3 -c "
+BOT_NAME=""
+if [[ "${1:-}" == "--bot" ]]; then
+  BOT_NAME="${2:-}"
+  if [[ -z "$BOT_NAME" ]]; then
+    echo "botmarchy-focus: --bot requires a bot name" >&2
+    exit 1
+  fi
+elif [[ $# -gt 0 ]]; then
+  echo "usage: botmarchy-focus [--bot <name>]" >&2
+  exit 1
+fi
+
+window_address() {
+  local class addr
+  # Dev-mode window class is 'hermes' (packaged builds may use 'botmarchy').
+  for class in hermes botmarchy Botmarchy; do
+    addr=$(hyprctl -j clients 2>/dev/null | python3 -c "
 import json, sys
 for c in json.load(sys.stdin):
     if c.get('class') == '$class' and c.get('mapped'):
         print(c['address']); break
 " 2>/dev/null) || true
-  if [[ -n "$addr" ]]; then
-    hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1 || true
+    if [[ -n "$addr" ]]; then
+      printf '%s' "$addr"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ENTRY_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+APPIMAGE="$HOME/Applications/Botmarchy.AppImage"
+
+launch_entry_with_url() {
+  # Deterministic deep-link delivery: launching the entry WITH the URL
+  # works warm (single-instance argv forwarding) and cold (argv queue).
+  # Deliberately NOT xdg-open — the hermes CLI's desktop entry can re-claim
+  # the hermes:// protocol and steal the URL.
+  local url="$1" entry
+
+  for entry in dev.botmarchy.Botmarchy Botmarchy; do
+    if [[ -f "$ENTRY_DIR/$entry.desktop" ]] && command -v gtk-launch >/dev/null 2>&1; then
+      exec gtk-launch "$entry" "$url"
+    fi
+  done
+
+  if [[ -x "$APPIMAGE" ]]; then
+    setsid "$APPIMAGE" "$url" >/tmp/botmarchy-dev.log 2>&1 &
     exit 0
   fi
-done
 
-# Not running. Launch the installed desktop entry if present (packaged
-# installs); fall back to the dev launcher (source checkouts). A plain exit-0
-# no-op would silently break Muster's engage action for packaged users
-# (PB-7 review F4), so failure to launch is a real failure.
-entry_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  return 1
+}
+
+if [[ -n "$BOT_NAME" ]]; then
+  if ! launch_entry_with_url "hermes://bot/$BOT_NAME"; then
+    echo "botmarchy-focus: no Botmarchy launcher for deep link" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+# No --bot: classic focus-or-launch.
+addr=$(window_address)
+if [[ -n "$addr" ]]; then
+  hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1 || true
+  exit 0
+fi
+
 for entry in dev.botmarchy.Botmarchy Botmarchy; do
-  if [[ -f "$entry_dir/$entry.desktop" ]] && command -v gtk-launch >/dev/null 2>&1; then
+  if [[ -f "$ENTRY_DIR/$entry.desktop" ]] && command -v gtk-launch >/dev/null 2>&1; then
     gtk-launch "$entry" >/dev/null 2>&1 && exit 0
   fi
 done
 
 launcher="$HOME/coding-projects/botmarchy/scripts/dev/launch-local.sh"
 if [[ -x "$launcher" ]]; then
-  (setsid "$launcher" >/tmp/botmarchy-dev.log 2>&1 &)
+  setsid "$launcher" >/tmp/botmarchy-dev.log 2>&1 &
   exit 0
 fi
 

@@ -10,7 +10,8 @@ import qs.Ui
 // Layer 2 (peek):   hover tooltip — per-bot status + last message
 // Layer 3 (decide): click (or Super+Alt+B via IPC) opens the roster panel
 //                   below the bar — keyboard-first (↑/↓ or j/k to move,
-//                   Enter engages Botmarchy, Esc closes, r refreshes);
+//                   Enter engages that bot's chat via hermes://bot/<name>,
+//                   Esc closes, r refreshes);
 //                   row click engages with the mouse. Persists until
 //                   dismissed: outside click, Escape, or the icon again.
 //
@@ -68,7 +69,16 @@ Panel {
 
   function engage(index) {
     if (index < 0 || index >= bots.length) return
-    Quickshell.execDetached(["botmarchy-focus"])
+    // Deep-link engage (MP-1): land on the CHOSEN bot's chat, not just the
+    // window — botmarchy-focus --bot opens hermes://bot/<name> when the app
+    // is running (or boots it into that bot).
+    // PROFILE name (bots[index].profile), not the display name — the app's
+    // deep link routes by profile ("test-bot"), while .name is the human
+    // label ("testbot"); a display name would create a dead navigation.
+    var botId = bots[index].profile || bots[index].name
+    var args = ["botmarchy-focus"]
+    if (botId) args.push("--bot", botId)
+    Quickshell.execDetached(args)
     close()
   }
 
