@@ -3,6 +3,11 @@
 # Exit codes: 0 = focused or launched; 1 = nothing to focus and no launcher.
 set -uo pipefail
 
+# Electron binaries spawned below must never inherit ELECTRON_RUN_AS_NODE —
+# it turns them into plain node, which rejects Electron flags and dies with
+# "bad option" (bit agent-launched contexts; harmless elsewhere).
+unset ELECTRON_RUN_AS_NODE
+
 # Dev-mode window class is 'hermes' (packaged builds may use 'botmarchy').
 for class in hermes botmarchy Botmarchy; do
   addr=$(hyprctl -j clients 2>/dev/null | python3 -c "
