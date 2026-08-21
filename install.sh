@@ -43,7 +43,7 @@ if [[ -n "$box_target" ]] && ! [[ "$box_target" =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9._
   exit 1
 fi
 
-for script in botmarchy-muster botmarchy-focus; do
+for script in botmarchy-muster botmarchy-focus botmarchy-usage-update; do
   if [[ ! -f "$PLUGIN_DIR/bin/$script" ]]; then
     echo "install.sh: missing $PLUGIN_DIR/bin/$script — incomplete plugin?" >&2
     exit 1
@@ -61,7 +61,7 @@ link_owned() {
   [[ -L "$target" ]] && [[ "$(readlink -f "$target" 2>/dev/null)" == "$PLUGIN_DIR/bin/$name" ]]
 }
 
-for script in botmarchy-muster botmarchy-focus; do
+for script in botmarchy-muster botmarchy-focus botmarchy-usage-update; do
   target="$LOCAL_BIN/$script"
 
   if ! link_owned "$target"; then
@@ -93,6 +93,12 @@ if [[ -n "$box_target" ]]; then
     exit 1
   fi
   ssh "${SSH_OPTS[@]}" "$box_target" "chmod +x '$remote_tmp' && mv '$remote_tmp' ~/.local/bin/botmarchy-muster-snapshot"
+
+  # Usage-record aggregator (F1): same push discipline as the snapshot.
+  remote_tmp2="$(ssh "${SSH_OPTS[@]}" "$box_target" 'mktemp /tmp/muster-usage.XXXXXX')"
+  scp -q -o BatchMode=yes -o ConnectTimeout=8 \
+    "$PLUGIN_DIR/box/muster-usage.py" "$box_target:$remote_tmp2"
+  ssh "${SSH_OPTS[@]}" "$box_target" "chmod +x '$remote_tmp2' && mv '$remote_tmp2' ~/.local/bin/botmarchy-muster-usage"
 
   # Version round-trip (MP-3/QW1): prove the deployed helper is the copy
   # this plugin ships — the pre-MP-3 box copy had silently skewed from the

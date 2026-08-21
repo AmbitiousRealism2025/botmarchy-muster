@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Botmarchy usage-record writer (F1) — pulls the aggregated court usage
+# record from the gateway and drops it where the Omarchy agents panel reads:
+# ~/.local/state/omarchy/agents/usage/botmarchy.json
+#
+# Reuses Muster's ControlMaster socket when warm (the panel's polls keep it
+# alive), else opens one. Atomic write (tmp + mv) so the panel's FileView
+# never reads a half-written record. Exit 0 even on unreachable — a missed
+# refresh is not an error condition; the timer just tries again.
+#
+# Target resolution: BOTMARCHY_SSH env → ~/.config/botmarchy/muster.json
+# (the same chain the roster CLI uses).
+
+set -uo pipefail
+
+CONFIG_FILE="$HOME/.config/botmarchy/muster.json"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/botmarchy"
+USAGE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
+OUT="$USAGE_DIR/botmarchy.json"
+
+resolve_target() {
+  if [[ -n "${BOTMARCHY_SSH:-}" ]]; then
+    printf '%s' "$BOTMARCHY_SSH"
+    return
+  fi
+
+  python3 - "$CONFIG_FILE" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("ssh", ""), end="")
+except Exception:
+    pass
+PY
+}
+
+SSH_TARGET="$(resolve_target)"
+[[ -z "$SSH_TARGET" ]] && exit 0
+
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8
+  -o ControlMaster=auto -o ControlPath="$CACHE_DIR/cm-%C" -o ControlPersist=10m)
+
+record="$(ssh "${SSH_OPTS[@]}" "$SSH_TARGET" 'botmarchy-muster-usage' 2>/dev/null)" || exit 0
+
+# Sanity-gate before dropping: must parse as JSON with the record's id.
+if ! printf '%s' "$record" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+sys.exit(0 if isinstance(d, dict) and d.get("id") == "botmarchy" else 1)
+' 2>/dev/null; then
+  exit 0
+fi
+
+mkdir -p "$USAGE_DIR"
+tmp="$(mktemp "$USAGE_DIR/.botmarchy.XXXXXX")"
+printf '%s' "$record" >"$tmp"
+mv "$tmp" "$OUT"
