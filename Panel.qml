@@ -132,8 +132,40 @@ Panel {
     return Math.floor(s / 86400) + "d"
   }
 
+  // ── Idle-aware polling (PB-16 F3) ─────────────────────────────────────
+  // While the session is idle (Omarchy screensaver up or hyprlock running)
+  // nobody can see the bar — polls are pure waste (and battery). The check
+  // itself is cheap and cached (probe every ~60s max); on the idle→active
+  // transition the roster refreshes immediately.
+  property bool sessionIdle: false
+  property real lastIdleProbe: 0
+
+  function probeSessionIdle() {
+    var now = Date.now() / 1000
+    if (now - root.lastIdleProbe < 60 && root.lastIdleProbe > 0) return
+    root.lastIdleProbe = now
+    idleProbeProc.running = true
+  }
+
+  Process {
+    id: idleProbeProc
+    running: false
+    command: ["bash", "-c",
+      "if hyprctl -j clients 2>/dev/null | grep -q 'org.omarchy.screensaver' || pidof hyprlock >/dev/null 2>&1; then echo idle; else echo active; fi"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var was = root.sessionIdle
+        root.sessionIdle = String(text).trim() === "idle"
+        if (was && !root.sessionIdle) root.refresh()  // wake → immediate refresh
+      }
+    }
+  }
+
   function refresh() {
     if (pollProc.running || sshTarget === "") return
+    probeSessionIdle()
+    if (root.sessionIdle) return
     pollProc.running = true
   }
 
