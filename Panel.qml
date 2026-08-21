@@ -172,6 +172,12 @@ Panel {
   }
 
   // --- layer 1 + 2: the bar button ------------------------------------------
+  // Label states (glance layer). Working state is called out with the ⚙
+  // badge count; idle/empty stay quiet. The label text renders in theme
+  // FOREGROUND like every bar widget — Botmarchy's accent (the theme's
+  // accent key, same source as the app's garnish) appears on STATE fills
+  // (panel row selection, badge chips), not on label text: accent-as-text
+  // measures 3.16:1 under the active theme vs 11.27:1 for foreground.
   readonly property string labelText:
     sshTarget === "" ? "⚔ ⚠"
     : bots.length === 0 ? "⚔ –"
@@ -183,7 +189,7 @@ Panel {
       return ["Botmarchy Muster — not configured", "",
         "Set sshTarget here in shell.json, or run", "`botmarchy-muster` once to answer setup."].join("\n")
     }
-    var lines = ["Botmarchy — roll call  ·  " + (stale ? "stale" : "live")]
+    var lines = ["Botmarchy — bot roster  ·  " + (stale ? "stale" : "live")]
     for (var i = 0; i < bots.length; i++) {
       var b = bots[i]
       lines.push(`${b.working ? "▶" : "●"} ${b.name} — ${b.last_message || "no messages"}`)
@@ -258,13 +264,22 @@ Panel {
         anchors.fill: parent
         spacing: Style.space(4)
 
-        // header
+        // header — brand mark + plain product name (QW3: the court
+        // vocabulary lives in the body copy, the header reads as the app).
         Row {
           width: parent.width
           spacing: Style.space(8)
 
+          Image {
+            source: Qt.resolvedUrl("assets/botmarchy-icon.png")
+            sourceSize.width: Style.font.bodySmall * 1.4
+            sourceSize.height: Style.font.bodySmall * 1.4
+            anchors.verticalCenter: parent.verticalCenter
+            fillMode: Image.PreserveAspectFit
+            mipmap: true
+          }
           Text {
-            text: "Botmarchy — roll call"
+            text: "Botmarchy"
             color: Color.popups.text
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.bodySmall
