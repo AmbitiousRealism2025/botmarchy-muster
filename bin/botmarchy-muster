@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Botmarchy Muster — roster window (layer 3).
+# Super+Alt+B (or bar click) opens this. Keyboard-first: arrows/j-k + Enter.
+# First run asks the cadence question once (Live/Balanced/Lazy) and, when no
+# target is configured, the gateway SSH target. Then this never appears
+# again. Edit ~/.config/botmarchy/muster.json to change.
+
+set -euo pipefail
+
+CONFIG_DIR="$HOME/.config/botmarchy"
+CONFIG_FILE="$CONFIG_DIR/muster.json"
+CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/botmarchy/muster-state.json"
+
+# Target resolution (review F4): BOTMARCHY_SSH env (explicit override) →
+# muster.json's "ssh" → unconfigured (prompted for on first run below).
+# Never a hardcoded host.
+resolve_target() {
+  if [[ -n "${BOTMARCHY_SSH:-}" ]]; then
+    printf '%s' "$BOTMARCHY_SSH"
+    return
+  fi
+
+  python3 - "$CONFIG_FILE" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("ssh", ""), end="")
+except Exception:
+    pass
+PY
+}
+
+SSH_TARGET="$(resolve_target)"
+
+# --- launcher detection (Omarchy ships fuzzel; fall back to wofi) --------
+dmenu() {
+  if command -v fuzzel >/dev/null 2>&1; then
+    fuzzel --dmenu --log-level=none "$@"
+  elif command -v wofi >/dev/null 2>&1; then
+    wofi --dmenu "$@"
+  else
+    echo "Muster needs fuzzel or wofi for the roster window." >&2
+    exit 1
+  fi
+}
+
+# --- first run: cadence onboarding ----------------------------------------
+mkdir -p "$CONFIG_DIR"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  choice=$(printf 'Live — update every 2s\nBalanced — update every 10s\nLazy — update every 60s' \
+    | dmenu --prompt='Muster cadence  ' ) || true
+  case "$choice" in
+    Live*)     interval=2 ;;
+    Balanced*) interval=10 ;;
+    Lazy*)     interval=60 ;;
+    *)         interval=10 ;;   # dismissed → sane default, still write config
+  esac
+
+  # No env override and no existing target: ask once. The answer becomes the
+  # first valid rung of the config chain — edit muster.json to change it.
+  if [[ -z "$SSH_TARGET" ]]; then
+    SSH_TARGET=$(dmenu --prompt='Gateway SSH target (user@host) ') || true
+  fi
+
+  printf '{\n  "interval": %s,\n  "ssh": "%s"\n}\n' "$interval" "$SSH_TARGET" > "$CONFIG_FILE"
+fi
+
+# --- fresh state (right-click on the bar already refreshed the cache;
+#     the roster deserves current data at open time) ------------------------
+snapshot='{}'
+if [[ -n "$SSH_TARGET" ]]; then
+  snapshot=$(ssh -o BatchMode=yes -o ConnectTimeout=3 "$SSH_TARGET" 'botmarchy-muster-snapshot' 2>/dev/null) \
+    || snapshot=$(cat "$CACHE_FILE" 2>/dev/null || echo '{}')
+else
+  snapshot=$(cat "$CACHE_FILE" 2>/dev/null || echo '{}')
+fi
+
+# --- jump target ------------------------------------------------------------
+if [[ "${1:-}" == "--jump" ]]; then
+  botmarchy-focus 2>/dev/null || hyprctl dispatch workspace 1 >/dev/null 2>&1 || true
+  exit 0
+fi
+
+# --- render rows + handle selection -----------------------------------------
+selection=$(python3 - "$snapshot" <<'PY'
+import json, sys, time
+
+snap = json.loads(sys.argv[1] or "{}")
+bots = snap.get("bots", [])
+
+def ago(ts):
+    if not ts: return "?"
+    s = int(time.time() - ts)
+    if s < 60: return f"{s}s"
+    if s < 3600: return f"{s//60}m"
+    if s < 86400: return f"{s//3600}h"
+    return f"{s//86400}d"
+
+for b in bots:
+    mark = "▶" if b.get("working") else "●"
+    status = "working" if b.get("working") else (b.get("last_role") or "new")
+    msg = b.get("last_message") or "no messages"
+    print(f"{mark} {b.get('name')}  [{status} · {ago(b.get('last_activity'))}]  {msg}")
+PY
+) || true
+
+if [[ -z "$selection" ]]; then
+  printf 'No bots on the gateway yet — open Botmarchy to create one' | dmenu --prompt='Muster ' >/dev/null 2>&1 || true
+  exit 0
+fi
+
+chosen=$(printf '%s' "$selection" | dmenu --prompt='Muster — Enter to engage  ') || exit 0
+
+# Enter → focus Botmarchy (v1: focus the app window; per-bot chat focus is a
+# v2 refinement once the app exposes a deep link).
+botmarchy-focus 2>/dev/null || hyprctl dispatch workspace 1 >/dev/null 2>&1 || true

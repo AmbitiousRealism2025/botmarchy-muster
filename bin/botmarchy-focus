@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Focus (or launch) the Botmarchy window via Hyprland.
+set -uo pipefail
+
+# Dev-mode window class is 'hermes' (packaged builds may use 'botmarchy').
+for class in hermes botmarchy Botmarchy; do
+  addr=$(hyprctl -j clients 2>/dev/null | python3 -c "
+import json, sys
+for c in json.load(sys.stdin):
+    if c.get('class') == '$class' and c.get('mapped'):
+        print(c['address']); break
+" 2>/dev/null) || true
+  if [[ -n "$addr" ]]; then
+    hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1 || true
+    exit 0
+  fi
+done
+
+# Not running: launch via the dev launcher if present (packaged installs
+# substitute their .desktop exec).
+if [[ -x "$HOME/coding-projects/botmarchy/scripts/dev/launch-local.sh" ]]; then
+  (setsid "$HOME/coding-projects/botmarchy/scripts/dev/launch-local.sh" \
+     >/tmp/botmarchy-dev.log 2>&1 &)
+fi
