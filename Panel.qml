@@ -56,6 +56,11 @@ Panel {
     for (var i = 0; i < bots.length; i++) if (bots[i].working) n++
     return n
   }
+  readonly property int unreadCount: {
+    var n = 0
+    for (var i = 0; i < bots.length; i++) if (bots[i].has_new) n++
+    return n
+  }
   readonly property color dim: Qt.darker(Color.popups.text, 1.4)
   readonly property double generated: (snapshot && snapshot.generated) || 0
   readonly property bool stale: generated === 0 || Date.now() / 1000 - generated > 900
@@ -86,6 +91,17 @@ Panel {
     var args = ["botmarchy-focus"]
     if (botId) args.push("--bot", botId)
     Quickshell.execDetached(args)
+    // Engaging IS the read: clear the unread dot box-side (watermark ack),
+    // then refresh so the roster reflects it immediately (MP-4).
+    if (botId && bots[index].has_new === true) {
+      Quickshell.execDetached(["ssh",
+        "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+        "-o", "ControlMaster=auto",
+        "-o", "ControlPath=" + root.cacheDir + "/cm-%C",
+        "-o", "ControlPersist=10m",
+        root.sshTarget, "botmarchy-muster-snapshot", "--ack", botId])
+      ackRefresh.restart()
+    }
     close()
   }
 
@@ -154,6 +170,11 @@ Panel {
         try {
           root.snapshot = JSON.parse(text || "")
           if (root.selectedIndex >= root.bots.length) root.selectedIndex = 0
+          // Cache hand-off (MP-4): the roster CLI reads this when the
+          // gateway is unreachable (freshness-gated client-side).
+          Quickshell.execDetached(["bash", "-c",
+            'mkdir -p "$HOME/.cache/botmarchy" && printf %s "$1" > "$HOME/.cache/botmarchy/muster-state.json"',
+            "_", String(text)])
         } catch (e) {
           // unreachable or unparsable: keep the previous snapshot; the
           // generated timestamp ages it out to the dimmed stale state.
@@ -176,6 +197,16 @@ Panel {
     onTriggered: root.refresh()
   }
 
+  // After an engage-ack: the ack ssh returns in ms via ControlMaster; give
+  // it a beat, then pull a fresh snapshot so the dot clears immediately.
+  Timer {
+    id: ackRefresh
+    interval: 700
+    repeat: false
+    running: false
+    onTriggered: root.refresh()
+  }
+
   IpcHandler {
     target: root.ipcTarget
     function open(): void { root.open() }
@@ -193,11 +224,14 @@ Panel {
   // accent key, same source as the app's garnish) appears on STATE fills
   // (panel row selection, badge chips), not on label text: accent-as-text
   // measures 3.16:1 under the active theme vs 11.27:1 for foreground.
-  readonly property string labelText:
-    sshTarget === "" ? "⚔ ⚠"
-    : bots.length === 0 ? "⚔ –"
-    : workingCount > 0 ? `⚔ ${bots.length} · ${workingCount} ⚙`
-    : `⚔ ${bots.length}`
+  readonly property string labelText: {
+    if (sshTarget === "") return "⚔ ⚠"
+    if (bots.length === 0) return "⚔ –"
+    var label = `⚔ ${bots.length}`
+    if (workingCount > 0) label += ` · ${workingCount} ⚙`
+    if (unreadCount > 0) label += ` · ${unreadCount} ✦`
+    return label
+  }
 
   readonly property string tooltipText: {
     if (sshTarget === "") {
@@ -330,7 +364,21 @@ Panel {
               anchors.rightMargin: Style.space(8)
               spacing: Style.space(8)
 
+              // Mark: ▶ working (strongest); accent dot = idle with news
+              // (the decide layer's unread signal, MP-4); dim ● = idle/seen.
+              Loader {
+                active: !modelData.working && modelData.has_new === true
+                sourceComponent: Component {
+                  Rectangle {
+                    width: Style.space(7); height: Style.space(7)
+                    radius: width / 2
+                    color: Color.accent
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                }
+              }
               Text {
+                visible: modelData.working || modelData.has_new !== true
                 text: modelData.working ? "▶" : "●"
                 color: modelData.working ? Color.bar.active : root.dim
                 font.pixelSize: Style.font.body

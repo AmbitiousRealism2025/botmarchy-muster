@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dev.botmarchy.muster",
   "name": "Botmarchy Muster",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "author": "AmbitiousRealism",
   "description": "Your Botmarchy bot court at a glance: roster status in the bar, hover for per-bot activity, click for the roster window.",
   "kinds": [

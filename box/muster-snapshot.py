@@ -123,7 +123,40 @@ def summarize_profile(name: str, home: Path) -> dict:
     return bot
 
 
-SNAPSHOT_VERSION = "0.1.3"
+SNAPSHOT_VERSION = "0.1.5"
+
+# Unread watermark (MP-4): the LAST activity epoch delivered per profile.
+# has_new = activity advanced past the watermark AND is fresher than a day
+# (direct-app reads can't clear it — the 24h decay keeps stale news from
+# sticking forever). The watermark does NOT advance on plain polls: the
+# signal persists until the panel ACKS it (--ack <profile>, fired on
+# engage) — a 10-second pulse would be useless at glance distance.
+NEWS_DECAY_SECONDS = 86400
+
+
+def _cache_dir() -> Path:
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    return Path(xdg) if xdg else Path.home() / ".cache"
+
+
+def _watermark_path() -> Path:
+    return _cache_dir() / "botmarchy" / "muster-delivered.json"
+
+
+def _load_watermark() -> dict | None:
+    try:
+        data = json.loads(_watermark_path().read_text())
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _save_watermark(wm: dict) -> None:
+    path = _watermark_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(wm, separators=(",", ":")))
+    os.replace(tmp, path)
 
 
 def main() -> int:
@@ -139,6 +172,32 @@ def main() -> int:
 
     bots = [summarize_profile(i.name, Path(i.path)) for i in infos]
     bots.sort(key=lambda b: (not b["working"], -(b["last_activity"] or 0)))
+
+    if len(sys.argv) > 2 and sys.argv[1] == "--ack":
+        target = sys.argv[2]
+        wm = _load_watermark() or {}
+        la = next((b["last_activity"] or 0 for b in bots if b["profile"] == target), None)
+        if la is None:
+            print(f"ack: unknown profile {target}", file=sys.stderr)
+            return 1
+        wm[target] = la
+        _save_watermark(wm)
+        print(f"acked {target} at {la}")
+        return 0
+
+    wm = _load_watermark()
+    if wm is None:
+        # First run: initialize the watermark to current activity WITHOUT
+        # flagging — deploying must not light up every bot at once.
+        wm = {b["profile"]: b["last_activity"] or 0 for b in bots}
+        _save_watermark(wm)
+        for b in bots:
+            b["has_new"] = False
+    else:
+        now = time.time()
+        for b in bots:
+            la = b["last_activity"] or 0
+            b["has_new"] = la > wm.get(b["profile"], 0) and (now - la) < NEWS_DECAY_SECONDS
 
     payload = json.dumps(
         {"generated": time.time(), "bots": bots},

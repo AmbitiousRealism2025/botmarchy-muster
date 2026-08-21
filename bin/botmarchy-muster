@@ -67,19 +67,26 @@ fi
 # --- fresh state (right-click on the bar already refreshed the cache;
 #     the roster deserves current data at open time) ------------------------
 # Fresh state over ssh (ControlMaster reuses the panel's warm connection).
-# Offline fallback removed (MP-3/QW2): the legacy cache file has had no
-# writer since the waybar era and served stale data as fresh. When the
-# gateway is unreachable, say so instead.
+# Offline fallback (MP-4): the panel writes muster-state.json on every
+# successful poll — use it ONLY when it's fresh (<15 min, mtime-gated) so a
+# dead cache can never serve day-old data as current (the MP-3 bug class).
+CACHE_FILE="$CACHE_DIR/muster-state.json"
 snapshot='{}'
 if [[ -n "$SSH_TARGET" ]]; then
   snapshot=$(ssh -o BatchMode=yes -o ConnectTimeout=3 \
     -o ControlMaster=auto -o ControlPath="$CACHE_DIR/cm-%C" -o ControlPersist=10m \
     "$SSH_TARGET" 'botmarchy-muster-snapshot' 2>/dev/null) || snapshot='{}'
-  if [[ "$snapshot" == '{}' ]]; then
-    printf 'Gateway unreachable — showing nothing stale. Right-click the bar widget to retry.' \
-      | dmenu --prompt='Muster ' >/dev/null 2>&1 || true
-    exit 0
+fi
+if [[ "$snapshot" == '{}' && -f "$CACHE_FILE" ]]; then
+  age=$(( $(date +%s) - $(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0) ))
+  if (( age < 900 )); then
+    snapshot=$(cat "$CACHE_FILE")
   fi
+fi
+if [[ "$snapshot" == '{}' ]]; then
+  printf 'Gateway unreachable and no recent roster cache. Right-click the bar widget to retry.' \
+    | dmenu --prompt='Muster ' >/dev/null 2>&1 || true
+  exit 0
 fi
 
 # --- jump target ------------------------------------------------------------
