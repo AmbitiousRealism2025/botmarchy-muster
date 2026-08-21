@@ -144,7 +144,7 @@ Panel {
     command: ["ssh",
       "-o", "BatchMode=yes", "-o", "ConnectTimeout=2",
       "-o", "ControlMaster=auto",
-      "-o", "ControlPath=" + root.cacheDir + "/ssh-%r@%h:%p",
+      "-o", "ControlPath=" + root.cacheDir + "/cm-%C",
       "-o", "ControlPersist=10m",
       root.sshTarget, "botmarchy-muster-snapshot"]
 

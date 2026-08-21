@@ -73,7 +73,7 @@ fi
 snapshot='{}'
 if [[ -n "$SSH_TARGET" ]]; then
   snapshot=$(ssh -o BatchMode=yes -o ConnectTimeout=3 \
-    -o ControlMaster=auto -o ControlPath="$CACHE_DIR/ssh-%r@%h:%p" -o ControlPersist=10m \
+    -o ControlMaster=auto -o ControlPath="$CACHE_DIR/cm-%C" -o ControlPersist=10m \
     "$SSH_TARGET" 'botmarchy-muster-snapshot' 2>/dev/null) || snapshot='{}'
   if [[ "$snapshot" == '{}' ]]; then
     printf 'Gateway unreachable — showing nothing stale. Right-click the bar widget to retry.' \
