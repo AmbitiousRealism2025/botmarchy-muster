@@ -123,7 +123,14 @@ def summarize_profile(name: str, home: Path) -> dict:
     return bot
 
 
+SNAPSHOT_VERSION = "0.1.3"
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
+        print(SNAPSHOT_VERSION)
+        return 0
+
     os.environ.setdefault("HERMES_HOME", str(Path.home() / ".hermes"))
     try:
         infos = profiles_mod.list_profiles()

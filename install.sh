@@ -93,7 +93,17 @@ if [[ -n "$box_target" ]]; then
     exit 1
   fi
   ssh "${SSH_OPTS[@]}" "$box_target" "chmod +x '$remote_tmp' && mv '$remote_tmp' ~/.local/bin/botmarchy-muster-snapshot"
-  echo "installed botmarchy-muster-snapshot on $box_target"
+
+  # Version round-trip (MP-3/QW1): prove the deployed helper is the copy
+  # this plugin ships — the pre-MP-3 box copy had silently skewed from the
+  # plugin for weeks.
+  deployed="$(ssh "${SSH_OPTS[@]}" "$box_target" 'botmarchy-muster-snapshot --version 2>/dev/null' || true)"
+  expected="$(python3 "$PLUGIN_DIR/box/muster-snapshot.py" --version 2>/dev/null || true)"
+  if [[ "$deployed" == "$expected" && -n "$deployed" ]]; then
+    echo "installed botmarchy-muster-snapshot $deployed on $box_target"
+  else
+    echo "WARNING: version mismatch on $box_target — deployed '$deployed', expected '$expected'. Re-run with --box." >&2
+  fi
 fi
 
 echo
@@ -104,3 +114,7 @@ echo
 echo "To point it at your gateway:"
 echo "  omarchy bar set dev.botmarchy.muster sshTarget user@host"
 echo "  omarchy bar set dev.botmarchy.muster intervalSec 10"
+echo
+echo "Default placement is the far right edge. To sit it beside other"
+echo "agent widgets instead (example, agents-adjacent slot):"
+echo "  omarchy bar move dev.botmarchy.muster --section right --index 6"

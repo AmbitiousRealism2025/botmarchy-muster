@@ -32,6 +32,13 @@ omarchy bar set dev.botmarchy.muster sshTarget user@host   # gateway SSH target
 omarchy bar set dev.botmarchy.muster intervalSec 10         # poll cadence (s)
 ```
 
+Default placement is the far-right end of the bar. To move it (e.g. beside
+the agents widget):
+
+```sh
+omarchy bar move dev.botmarchy.muster --section right --index 6
+```
+
 Or run `botmarchy-muster` once for the guided setup. State lives in
 `~/.config/botmarchy/muster.json`.
 

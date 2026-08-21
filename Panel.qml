@@ -32,6 +32,13 @@ Panel {
   // --- configuration chain -------------------------------------------------
   property var musterConfig: ({})
 
+  // Socket + cache home for the SSH ControlMaster (and MP-4's cache
+  // hand-off). XDG default; created on demand by ssh itself.
+  readonly property string cacheDir: {
+    var xdg = Quickshell.env("XDG_CACHE_HOME")
+    return (xdg && xdg.length > 0 ? xdg : Quickshell.env("HOME") + "/.cache") + "/botmarchy"
+  }
+
   readonly property string configuredTarget: String(setting("sshTarget", "")).trim()
   readonly property string fileTarget: String(musterConfig.ssh || "").trim()
   readonly property string sshTarget: configuredTarget || fileTarget
@@ -130,7 +137,15 @@ Panel {
   Process {
     id: pollProc
 
-    command: ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2",
+    // ControlMaster (MP-3/CM5): one authenticated connection per ~10min
+    // instead of per poll (~8.6k/day → ~144/day at the default cadence).
+    // ControlPersist keeps the socket warm; if it dies, ssh transparently
+    // opens a fresh master (verified fallback).
+    command: ["ssh",
+      "-o", "BatchMode=yes", "-o", "ConnectTimeout=2",
+      "-o", "ControlMaster=auto",
+      "-o", "ControlPath=" + root.cacheDir + "/ssh-%r@%h:%p",
+      "-o", "ControlPersist=10m",
       root.sshTarget, "botmarchy-muster-snapshot"]
 
     stdout: StdioCollector {

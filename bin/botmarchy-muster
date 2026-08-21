@@ -9,7 +9,7 @@ set -euo pipefail
 
 CONFIG_DIR="$HOME/.config/botmarchy"
 CONFIG_FILE="$CONFIG_DIR/muster.json"
-CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/botmarchy/muster-state.json"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/botmarchy"
 
 # Target resolution (review F4): BOTMARCHY_SSH env (explicit override) →
 # muster.json's "ssh" → unconfigured (prompted for on first run below).
@@ -66,12 +66,20 @@ fi
 
 # --- fresh state (right-click on the bar already refreshed the cache;
 #     the roster deserves current data at open time) ------------------------
+# Fresh state over ssh (ControlMaster reuses the panel's warm connection).
+# Offline fallback removed (MP-3/QW2): the legacy cache file has had no
+# writer since the waybar era and served stale data as fresh. When the
+# gateway is unreachable, say so instead.
 snapshot='{}'
 if [[ -n "$SSH_TARGET" ]]; then
-  snapshot=$(ssh -o BatchMode=yes -o ConnectTimeout=3 "$SSH_TARGET" 'botmarchy-muster-snapshot' 2>/dev/null) \
-    || snapshot=$(cat "$CACHE_FILE" 2>/dev/null || echo '{}')
-else
-  snapshot=$(cat "$CACHE_FILE" 2>/dev/null || echo '{}')
+  snapshot=$(ssh -o BatchMode=yes -o ConnectTimeout=3 \
+    -o ControlMaster=auto -o ControlPath="$CACHE_DIR/ssh-%r@%h:%p" -o ControlPersist=10m \
+    "$SSH_TARGET" 'botmarchy-muster-snapshot' 2>/dev/null) || snapshot='{}'
+  if [[ "$snapshot" == '{}' ]]; then
+    printf 'Gateway unreachable — showing nothing stale. Right-click the bar widget to retry.' \
+      | dmenu --prompt='Muster ' >/dev/null 2>&1 || true
+    exit 0
+  fi
 fi
 
 # --- jump target ------------------------------------------------------------
