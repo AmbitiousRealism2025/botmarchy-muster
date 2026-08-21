@@ -196,7 +196,11 @@ Panel {
     text: root.labelText
     fontSize: Style.font.caption
     horizontalMargin: 6
-    dimmed: root.sshTarget !== "" && (root.stale || root.workingCount === 0)
+    // Brightness = freshness, not activity (PB-8 A1): the court's healthy
+    // IDLE state is the common case and must read at full weight — dim only
+    // when data is stale (gateway unreachable >900s / never fetched). Idle
+    // dimming made the widget effectively invisible at its far-edge slot.
+    dimmed: root.sshTarget !== "" && root.stale
     tooltipText: root.tooltipText
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) {
