@@ -27,7 +27,7 @@ import sys
 import time
 from pathlib import Path
 
-USAGE_VERSION = "0.1.0"
+USAGE_VERSION = "0.1.1"
 
 _HERMES_ROOT_CANDIDATES = [
     Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "hermes-agent",
@@ -90,6 +90,7 @@ def aggregate() -> dict:
     day_sessions: dict[str, set[str]] = {}
     today_models: dict[str, int] = {}
     today = _day(time.time())
+    today_prompt_count = 0
     total_prompts = 0
     total_sessions = 0
 
@@ -115,12 +116,18 @@ def aggregate() -> dict:
             except sqlite3.Error:
                 pass  # older schema: leave zeros rather than invent numbers
 
-            # Message counts by day + per-model today rollup + prompt totals.
-            # NOTE: messages has NO model column (models live on sessions /
-            # session_model_usage) — join via session_id → sessions.model.
+            # Message counts by day + per-model today token rollup + prompt
+            # totals. NOTE: messages has NO model column (models live on
+            # sessions / session_model_usage) — join via session_id →
+            # sessions.model.
+            # Composite review P2.16: today_tokens_by_model used to count
+            # PROMPTS (one per user message) while todayTotalTokens summed
+            # real token_count — incompatible units in one record. Both are
+            # tokens now: token_count summed per session-model, matching
+            # todayTotalTokens exactly.
             try:
-                for ts, role, model, sid in db.execute(
-                    "SELECT m.timestamp, m.role, s.model, m.session_id "
+                for ts, role, model, sid, tcount in db.execute(
+                    "SELECT m.timestamp, m.role, s.model, m.session_id, m.token_count "
                     "FROM messages m LEFT JOIN sessions s ON m.session_id = s.id"
                 ):
                     d = _day(ts)
@@ -131,9 +138,11 @@ def aggregate() -> dict:
                         if sid:
                             day_sessions.setdefault(d, set()).add(sid)
 
-                        if d == today and role == "user":
+                        if d == today:
                             if model:
-                                today_models[model] = today_models.get(model, 0) + 1
+                                today_models[model] = today_models.get(model, 0) + int(tcount or 0)
+                            if role == "user":
+                                today_prompt_count += 1
 
                     if role == "user":
                         total_prompts += 1
@@ -183,7 +192,7 @@ def aggregate() -> dict:
         "hasLocalStats": True,
         "tierLabel": "",
         "usageStatusText": f"{len(profile_roots())} bots" if profile_roots() else "No bots yet",
-        "todayPrompts": today_models and sum(today_models.values()) or 0,
+        "todayPrompts": today_prompt_count,
         "todaySessions": len(day_sessions.get(today, set())),
         "todayTotalTokens": today_total,
         "todayTokensByModel": today_models,

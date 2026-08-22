@@ -41,6 +41,12 @@ omarchy bar set dev.botmarchy.muster sshTarget user@host   # gateway SSH target
 omarchy bar set dev.botmarchy.muster intervalSec 10         # poll cadence (s)
 ```
 
+Target format everywhere (bar setting, `muster.json` `"ssh"`, `BOTMARCHY_SSH`,
+`install.sh --box`): `[user@]host[:port]` — letters, digits, dots, dashes,
+underscores only; the first character can never be a dash. When the Botmarchy
+app applies an SSH connection it writes this file automatically, so the bar
+follows the box Settings chose. Key auth uses your SSH agent / default keys.
+
 Default placement is the far-right end of the bar. To move it (e.g. beside the agents widget):
 
 ```sh
@@ -57,7 +63,7 @@ systemctl --user enable --now botmarchy-usage.timer
 
 ## What talks to what
 
-- The **bar widget** (Panel.qml) polls `ssh <target> botmarchy-muster-snapshot` every `intervalSec`. The last good snapshot stays on screen when the gateway is unreachable; the label dims when data goes stale (>15 min).
+- The **bar widget** (Panel.qml) polls `ssh <target> botmarchy-muster-snapshot` every `intervalSec`. The last good snapshot stays on screen when the gateway is unreachable (and is restored from the cache after a shell restart, keyed to the same gateway); the label dims when data goes stale (>15 min) — including while polls are failing, so a dead box never reads as live.
 - **`botmarchy-muster-snapshot`** runs ON the gateway: reads Hermes profiles' SQLite state directly — read-only (`mode=ro`, 2s lock timeout), no HTTP, no session token. Also maintains the unread watermark and answers `--ack` when you engage a bot.
 - **`botmarchy-muster-usage`** (also on the gateway) aggregates the court's token/message usage into the record the OS agents panel renders.
 - **`botmarchy-muster`** is the roster window (fuzzel/wofi): keyboard-first, arrows/j-k + Enter to engage. First run asks cadence + target once.

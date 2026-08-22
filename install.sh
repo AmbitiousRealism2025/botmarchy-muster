@@ -38,8 +38,8 @@ while (( $# > 0 )); do
   esac
 done
 
-if [[ -n "$box_target" ]] && ! [[ "$box_target" =~ ^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$ ]]; then
-  echo "install.sh: --box expects user@host, got '$box_target'" >&2
+if [[ -n "$box_target" ]] && ! [[ "$box_target" =~ ^[A-Za-z0-9.][A-Za-z0-9._-]*@[A-Za-z0-9._-]+(:[1-9][0-9]{0,4})?$ ]]; then
+  echo "install.sh: --box expects user@host[:port], got '$box_target'" >&2
   exit 1
 fi
 
@@ -49,6 +49,13 @@ for script in botmarchy-muster botmarchy-focus botmarchy-usage-update; do
     exit 1
   fi
 done
+
+# ── Local cache dir (P1.8): OpenSSH never creates the ControlPath socket's
+# parent directory — create it NOW so a first poll on a clean install cannot
+# exit 255 before the panel has ever run. 0700: bot message snippets land
+# here (muster-state.json).
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/botmarchy"
+mkdir -p -m 700 "$CACHE_DIR"
 
 # ── Local symlinks (idempotent; never clobber foreign files) ───────────────
 mkdir -p "$LOCAL_BIN"
@@ -78,41 +85,64 @@ done
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 if [[ -d "$PLUGIN_DIR/systemd" ]]; then
   mkdir -p "$UNIT_DIR"
-  cp "$PLUGIN_DIR/systemd/botmarchy-usage.service" "$PLUGIN_DIR/systemd/botmarchy-usage.timer" "$UNIT_DIR/"
+  for unit in botmarchy-usage.service botmarchy-usage.timer; do
+    unit_target="$UNIT_DIR/$unit"
+    # Symlink like the bins (P3.10): `omarchy plugin update` refreshes the
+    # plugin dir, and a copied unit would silently drift from it.
+    if [[ -e "$unit_target" && ! -L "$unit_target" ]]; then
+      echo "install.sh: refusing to replace $unit_target (not a previous Muster unit)" >&2
+      exit 1
+    fi
+    rm -f "$unit_target"
+    ln -s "$PLUGIN_DIR/systemd/$unit" "$unit_target"
+  done
   systemctl --user daemon-reload 2>/dev/null || true
   echo "installed botmarchy-usage.timer (enable: systemctl --user enable --now botmarchy-usage.timer)"
 fi
 
 # ── Gateway box (optional): same SSH options for ssh+scp, atomic install ──
 if [[ -n "$box_target" ]]; then
+  # Split [user@]host[:port] — ssh wants -p, scp wants -P (P2.14).
+  box_port="$(printf '%s' "$box_target" | sed -n 's/.*:\([0-9]\+\)$/\1/p')"
+  box_host="$(printf '%s' "$box_target" | sed 's/:[0-9]*$//')"
   SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8)
+  [[ -n "$box_port" ]] && SSH_OPTS+=(-p "$box_port")
+  SCP_OPTS=(-o BatchMode=yes -o ConnectTimeout=8)
+  [[ -n "$box_port" ]] && SCP_OPTS+=(-P "$box_port")
+  SSH_HOST_ARGS=("${SSH_OPTS[@]}" -- "$box_host")
 
-  if ! ssh "${SSH_OPTS[@]}" "$box_target" 'mkdir -p ~/.local/bin'; then
+  if ! ssh "${SSH_HOST_ARGS[@]}" 'mkdir -p ~/.local/bin'; then
     echo "install.sh: could not reach $box_target over SSH" >&2
     exit 1
   fi
 
   # Upload to a temp path, then mv into place — a failed transfer must not
   # truncate the working remote helper (PB-7 review F8).
-  remote_tmp="$(ssh "${SSH_OPTS[@]}" "$box_target" 'mktemp /tmp/muster-snapshot.XXXXXX')"
-  if ! scp -q -o BatchMode=yes -o ConnectTimeout=8 \
-    "$PLUGIN_DIR/box/muster-snapshot.py" "$box_target:$remote_tmp"; then
-    ssh "${SSH_OPTS[@]}" "$box_target" "rm -f '$remote_tmp'" || true
+  remote_tmp="$(ssh "${SSH_HOST_ARGS[@]}" 'mktemp /tmp/muster-snapshot.XXXXXX')"
+  if ! scp -q "${SCP_OPTS[@]}" \
+    "$PLUGIN_DIR/box/muster-snapshot.py" "$box_host:$remote_tmp"; then
+    ssh "${SSH_HOST_ARGS[@]}" "rm -f '$remote_tmp'" || true
     echo "install.sh: upload to $box_target failed" >&2
     exit 1
   fi
-  ssh "${SSH_OPTS[@]}" "$box_target" "chmod +x '$remote_tmp' && mv '$remote_tmp' ~/.local/bin/botmarchy-muster-snapshot"
+  ssh "${SSH_HOST_ARGS[@]}" "chmod +x '$remote_tmp' && mv '$remote_tmp' ~/.local/bin/botmarchy-muster-snapshot"
 
-  # Usage-record aggregator (F1): same push discipline as the snapshot.
-  remote_tmp2="$(ssh "${SSH_OPTS[@]}" "$box_target" 'mktemp /tmp/muster-usage.XXXXXX')"
-  scp -q -o BatchMode=yes -o ConnectTimeout=8 \
-    "$PLUGIN_DIR/box/muster-usage.py" "$box_target:$remote_tmp2"
-  ssh "${SSH_OPTS[@]}" "$box_target" "chmod +x '$remote_tmp2' && mv '$remote_tmp2' ~/.local/bin/botmarchy-muster-usage"
+  # Usage-record aggregator (F1): SAME push discipline as the snapshot
+  # (P3.13 — a failed usage upload used to exit silently with a stray tmp
+  # file on the box; now it fails loudly with cleanup, like the snapshot).
+  remote_tmp2="$(ssh "${SSH_HOST_ARGS[@]}" 'mktemp /tmp/muster-usage.XXXXXX')"
+  if ! scp -q "${SCP_OPTS[@]}" \
+    "$PLUGIN_DIR/box/muster-usage.py" "$box_host:$remote_tmp2"; then
+    ssh "${SSH_HOST_ARGS[@]}" "rm -f '$remote_tmp2'" || true
+    echo "install.sh: usage-helper upload to $box_target failed" >&2
+    exit 1
+  fi
+  ssh "${SSH_HOST_ARGS[@]}" "chmod +x '$remote_tmp2' && mv '$remote_tmp2' ~/.local/bin/botmarchy-muster-usage"
 
   # Version round-trip (MP-3/QW1): prove the deployed helper is the copy
   # this plugin ships — the pre-MP-3 box copy had silently skewed from the
   # plugin for weeks.
-  deployed="$(ssh "${SSH_OPTS[@]}" "$box_target" 'botmarchy-muster-snapshot --version 2>/dev/null' || true)"
+  deployed="$(ssh "${SSH_HOST_ARGS[@]}" 'botmarchy-muster-snapshot --version 2>/dev/null' || true)"
   expected="$(python3 "$PLUGIN_DIR/box/muster-snapshot.py" --version 2>/dev/null || true)"
   if [[ "$deployed" == "$expected" && -n "$deployed" ]]; then
     echo "installed botmarchy-muster-snapshot $deployed on $box_target"

@@ -10,10 +10,47 @@ set -euo pipefail
 CONFIG_DIR="$HOME/.config/botmarchy"
 CONFIG_FILE="$CONFIG_DIR/muster.json"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/botmarchy"
+CACHE_FILE="$CACHE_DIR/muster-state.json"
+
+# Staleness threshold shared by every Muster consumer (composite P3.11):
+# panel QML, this CLI's cache fallback, and box-side expectations all treat
+# 900s as "too old to present as live". Keep in sync with Panel.qml.
+readonly MUSTER_STALE_AFTER=900
+
+# P1.8/P3.15: OpenSSH will not create the ControlPath socket's parent
+# directory — without this, a clean install's first ssh exits 255 before
+# anything else has run. 0700: the cache holds bot message snippets.
+mkdir -p -m 700 "$CACHE_DIR"
+
+# --- SSH target validation (composite P2.2) ---------------------------------
+# Format: [user@]host[:port]. A leading dash or metacharacter in an ssh
+# argv slot parses as an OPTION (-oProxyCommand=… executes on every poll),
+# so nothing outside this charset is ever passed to ssh.
+target_valid() {
+  [[ "$1" =~ ^[A-Za-z0-9.][A-Za-z0-9._-]*(@[A-Za-z0-9._-]+)?(:[1-9][0-9]{0,4})?$ ]]
+}
+
+target_host() { printf '%s' "$1" | sed 's/:[0-9]*$//'; }
+
+target_port() { printf '%s' "$1" | sed -n 's/.*:\([0-9]\+\)$/\1/p'; }
+
+muster_ssh() {
+  # All roster-CLI ssh goes through here: validated target, warm
+  # ControlMaster, `--` so nothing reparses as an option.
+  local port
+  port="$(target_port "$SSH_TARGET")"
+  local args=(
+    -o BatchMode=yes -o ConnectTimeout=3
+    -o ControlMaster=auto -o ControlPath="$CACHE_DIR/cm-%C" -o ControlPersist=10m
+  )
+  [[ -n "$port" ]] && args+=(-p "$port")
+  ssh "${args[@]}" -- "$(target_host "$SSH_TARGET")" "$@"
+}
 
 # Target resolution (review F4): BOTMARCHY_SSH env (explicit override) →
 # muster.json's "ssh" → unconfigured (prompted for on first run below).
-# Never a hardcoded host.
+# Never a hardcoded host. `.get("ssh") or ""` (P3.7): a stored JSON null
+# must not become the literal host "None".
 resolve_target() {
   if [[ -n "${BOTMARCHY_SSH:-}" ]]; then
     printf '%s' "$BOTMARCHY_SSH"
@@ -23,7 +60,7 @@ resolve_target() {
   python3 - "$CONFIG_FILE" <<'PY' 2>/dev/null || true
 import json, sys
 try:
-    print(json.load(open(sys.argv[1])).get("ssh", ""), end="")
+    print(json.load(open(sys.argv[1])).get("ssh") or "", end="")
 except Exception:
     pass
 PY
@@ -43,11 +80,18 @@ dmenu() {
   fi
 }
 
+# --- jump target (P3.6: BEFORE any fetch — a broken gateway must not stall
+#     the plain "jump to the app" keybind for ConnectTimeout seconds) ------
+if [[ "${1:-}" == "--jump" ]]; then
+  botmarchy-focus 2>/dev/null || hyprctl dispatch workspace 1 >/dev/null 2>&1 || true
+  exit 0
+fi
+
 # --- first run: cadence onboarding ----------------------------------------
 mkdir -p "$CONFIG_DIR"
 if [[ ! -f "$CONFIG_FILE" ]]; then
   choice=$(printf 'Live — update every 2s\nBalanced — update every 10s\nLazy — update every 60s' \
-    | dmenu --prompt='Muster cadence  ' ) || true
+    | dmenu --prompt='Muster cadence ') || true
   case "$choice" in
     Live*)     interval=2 ;;
     Balanced*) interval=10 ;;
@@ -58,44 +102,75 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   # No env override and no existing target: ask once. The answer becomes the
   # first valid rung of the config chain — edit muster.json to change it.
   if [[ -z "$SSH_TARGET" ]]; then
-    SSH_TARGET=$(dmenu --prompt='Gateway SSH target (user@host) ') || true
+    SSH_TARGET=$(dmenu --prompt='Gateway SSH target (user@host[:port]) ') || true
   fi
 
-  printf '{\n  "interval": %s,\n  "ssh": "%s"\n}\n' "$interval" "$SSH_TARGET" > "$CONFIG_FILE"
+  # Written with a real JSON serializer (P2.2): a stray quote typed into the
+  # fuzzel prompt must not corrupt the config into an unparseable file that
+  # silently bricks the chain. Only a VALIDATED target is ever persisted;
+  # anything else is stored as null and re-prompted on the next run.
+  stored_target=''
+  if [[ -n "$SSH_TARGET" ]] && target_valid "$SSH_TARGET"; then
+    stored_target="$SSH_TARGET"
+    SSH_TARGET="$stored_target"
+  else
+    SSH_TARGET=''
+  fi
+  python3 - "$CONFIG_FILE" "$interval" "$stored_target" <<'PY'
+import json, sys
+path, interval, target = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+with open(path, "w") as f:
+    json.dump({"interval": interval, "ssh": target or None}, f, indent=2)
+    f.write("\n")
+PY
+fi
+
+if [[ -n "$SSH_TARGET" ]] && ! target_valid "$SSH_TARGET"; then
+  printf 'Invalid gateway target “%s” — expected [user@]host[:port]. Edit ~/.config/botmarchy/muster.json.' "$SSH_TARGET" \
+    | dmenu --prompt='Muster ' >/dev/null 2>&1 || true
+  exit 1
 fi
 
 # --- fresh state (right-click on the bar already refreshed the cache;
 #     the roster deserves current data at open time) ------------------------
 # Fresh state over ssh (ControlMaster reuses the panel's warm connection).
 # Offline fallback (MP-4): the panel writes muster-state.json on every
-# successful poll — use it ONLY when it's fresh (<15 min, mtime-gated) so a
-# dead cache can never serve day-old data as current (the MP-3 bug class).
-CACHE_FILE="$CACHE_DIR/muster-state.json"
+# successful poll — an envelope {target, cachedAt, snapshot} (P2.15) — used
+# ONLY when it is fresh (mtime < MUSTER_STALE_AFTER) AND was polled from
+# the same gateway we are configured for, so a stale target's data can
+# never render as another court.
 snapshot='{}'
 if [[ -n "$SSH_TARGET" ]]; then
-  snapshot=$(ssh -o BatchMode=yes -o ConnectTimeout=3 \
-    -o ControlMaster=auto -o ControlPath="$CACHE_DIR/cm-%C" -o ControlPersist=10m \
-    "$SSH_TARGET" 'botmarchy-muster-snapshot' 2>/dev/null) || snapshot='{}'
+  snapshot=$(muster_ssh 'botmarchy-muster-snapshot' 2>/dev/null) || snapshot='{}'
 fi
 if [[ "$snapshot" == '{}' && -f "$CACHE_FILE" ]]; then
   age=$(( $(date +%s) - $(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0) ))
-  if (( age < 900 )); then
-    snapshot=$(cat "$CACHE_FILE")
+  if (( age < MUSTER_STALE_AFTER )); then
+    snapshot=$(python3 - "$CACHE_FILE" "$SSH_TARGET" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    env = json.load(open(sys.argv[1]))
+    if env.get("snapshot") and env.get("target") == sys.argv[2]:
+        print(json.dumps(env["snapshot"]))
+    else:
+        print("{}")
+except Exception:
+    print("{}")
+PY
+) || snapshot='{}'
+    [[ -n "$snapshot" ]] || snapshot='{}'
   fi
 fi
 if [[ "$snapshot" == '{}' ]]; then
-  printf 'Gateway unreachable and no recent roster cache. Right-click the bar widget to retry.' \
+  printf 'Gateway unreachable and no recent roster cache.\nRight-click the bar to retry, or press Super+Alt+B again in a moment.' \
     | dmenu --prompt='Muster ' >/dev/null 2>&1 || true
   exit 0
 fi
 
-# --- jump target ------------------------------------------------------------
-if [[ "${1:-}" == "--jump" ]]; then
-  botmarchy-focus 2>/dev/null || hyprctl dispatch workspace 1 >/dev/null 2>&1 || true
-  exit 0
-fi
-
 # --- render rows + handle selection -----------------------------------------
+# Rows carry the bot PROFILE in a trailing tab-delimited field: fuzzel/wofi
+# return the chosen line verbatim, so the profile rides along without any
+# display-name parsing (P2.10 — Enter engages THAT bot, matching the panel).
 selection=$(python3 - "$snapshot" <<'PY'
 import json, sys, time
 
@@ -114,7 +189,7 @@ for b in bots:
     mark = "▶" if b.get("working") else "●"
     status = "working" if b.get("working") else (b.get("last_role") or "new")
     msg = b.get("last_message") or "no messages"
-    print(f"{mark} {b.get('name')}  [{status} · {ago(b.get('last_activity'))}]  {msg}")
+    print(f"{mark} {b.get('name')}  [{status} · {ago(b.get('last_activity'))}]  {msg}\t{b.get('profile','')}")
 PY
 ) || true
 
@@ -123,8 +198,16 @@ if [[ -z "$selection" ]]; then
   exit 0
 fi
 
-chosen=$(printf '%s' "$selection" | dmenu --prompt='Muster — Enter to engage  ') || exit 0
+chosen=$(printf '%s' "$selection" | dmenu --prompt='Muster — Enter to engage ') || exit 0
+profile=$(printf '%s' "$chosen" | awk -F'\t' '{print $NF}')
 
-# Enter → focus Botmarchy (v1: focus the app window; per-bot chat focus is a
-# v2 refinement once the app exposes a deep link).
-botmarchy-focus 2>/dev/null || hyprctl dispatch workspace 1 >/dev/null 2>&1 || true
+# Enter → engage the CHOSEN bot (P2.10): same contract as the QML panel —
+# botmarchy-focus --bot lands in that bot's chat via the hermes:// deep
+# link. Profile charset gate mirrors the panel's (defense in depth: the
+# field rides through fuzzel output, and the app re-validates on receipt).
+if [[ "$profile" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]]; then
+  botmarchy-focus --bot "$profile" 2>/dev/null \
+    || hyprctl dispatch workspace 1 >/dev/null 2>&1 || true
+else
+  botmarchy-focus 2>/dev/null || hyprctl dispatch workspace 1 >/dev/null 2>&1 || true
+fi

@@ -2,5 +2,8 @@
 Description=Botmarchy usage record refresh (Omarchy agents panel)
 
 [Service]
+# Composite P3.9: a hung ssh (unreachable-but-not-timing-out network)
+# must not wedge the oneshot forever and stack up timer units.
+RuntimeMaxSec=120
 Type=oneshot
 ExecStart=%h/.local/bin/botmarchy-usage-update

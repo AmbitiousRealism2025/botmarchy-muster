@@ -88,7 +88,10 @@ for entry in dev.botmarchy.Botmarchy Botmarchy; do
   fi
 done
 
-launcher="$HOME/coding-projects/botmarchy/scripts/dev/launch-local.sh"
+# Dev fallback (P3.8): only when the maintainer explicitly opts in — a
+# distributed plugin must not carry a personal checkout path that silently
+# launches a dev tree other users don't have.
+launcher="${BOTMARCHY_DEV_LAUNCHER:-$HOME/coding-projects/botmarchy/scripts/dev/launch-local.sh}"
 if [[ -x "$launcher" ]]; then
   setsid "$launcher" >/tmp/botmarchy-dev.log 2>&1 &
   exit 0

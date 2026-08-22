@@ -27,7 +27,7 @@ resolve_target() {
   python3 - "$CONFIG_FILE" <<'PY' 2>/dev/null || true
 import json, sys
 try:
-    print(json.load(open(sys.argv[1])).get("ssh", ""), end="")
+    print(json.load(open(sys.argv[1])).get("ssh") or "", end="")
 except Exception:
     pass
 PY
@@ -36,10 +36,23 @@ PY
 SSH_TARGET="$(resolve_target)"
 [[ -z "$SSH_TARGET" ]] && exit 0
 
+# Composite P2.2/P1.8: validate the target before it reaches an ssh argv
+# slot (a leading dash parses as an option), and create the ControlPath
+# socket's parent — OpenSSH never creates it itself.
+target_valid() {
+  [[ "$1" =~ ^[A-Za-z0-9.][A-Za-z0-9._-]*(@[A-Za-z0-9._-]+)?(:[1-9][0-9]{0,4})?$ ]]
+}
+target_valid "$SSH_TARGET" || exit 0
+mkdir -p -m 700 "$CACHE_DIR"
+
+port="$(printf '%s' "$SSH_TARGET" | sed -n 's/.*:\([0-9]\+\)$/\1/p')"
+host="$(printf '%s' "$SSH_TARGET" | sed 's/:[0-9]*$//')"
+
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=8
   -o ControlMaster=auto -o ControlPath="$CACHE_DIR/cm-%C" -o ControlPersist=10m)
+[[ -n "$port" ]] && SSH_OPTS+=(-p "$port")
 
-record="$(ssh "${SSH_OPTS[@]}" "$SSH_TARGET" 'botmarchy-muster-usage' 2>/dev/null)" || exit 0
+record="$(ssh "${SSH_OPTS[@]}" -- "$host" 'botmarchy-muster-usage' 2>/dev/null)" || exit 0
 
 # Sanity-gate before dropping: must parse as JSON with the record's id.
 if ! printf '%s' "$record" | python3 -c '

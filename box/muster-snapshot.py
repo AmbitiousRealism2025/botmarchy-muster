@@ -145,7 +145,15 @@ def summarize_profile(name: str, home: Path) -> dict:
     return bot
 
 
-SNAPSHOT_VERSION = "0.1.6"
+SNAPSHOT_VERSION = "0.1.7"
+
+# Composite review P2.1: --ack hands its argument into the watermark keyed
+# by profile id; ids are gateway directory names matching the CLI's
+# _PROFILE_ID_RE shape. The ack path validates locally rather than trusting
+# the caller (the panel already gates; this is the box-side backstop).
+import re  # noqa: E402
+
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # Unread watermark (MP-4): the LAST activity epoch delivered per profile.
 # has_new = activity advanced past the watermark AND is fresher than a day
@@ -181,6 +189,31 @@ def _save_watermark(wm: dict) -> None:
     os.replace(tmp, path)
 
 
+# Composite review P3.12: polls (read) and engage-acks (read-modify-write)
+# can interleave — two concurrent runs can both base off the old watermark
+# and the last writer erases the other's update (a lost ack resurrects the
+# unread dot; a lost poll-init can flag the whole court). flock the RMW so
+# watermark transitions are serialized. Lock is advisory and side-table
+# (.lock file); a dead holder releases it via fd close.
+import fcntl  # noqa: E402
+
+
+class _watermark_lock:
+    """Context manager: exclusive advisory lock for watermark RMW."""
+
+    def __enter__(self):
+        self._path = _watermark_path().with_suffix(".lock")
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._fd = os.open(self._path, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *_exc):
+        fcntl.flock(self._fd, fcntl.LOCK_UN)
+        os.close(self._fd)
+        return False
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
         print(SNAPSHOT_VERSION)
@@ -197,22 +230,35 @@ def main() -> int:
 
     if len(sys.argv) > 2 and sys.argv[1] == "--ack":
         target = sys.argv[2]
-        wm = _load_watermark() or {}
-        la = next((b["last_activity"] or 0 for b in bots if b["profile"] == target), None)
-        if la is None:
-            print(f"ack: unknown profile {target}", file=sys.stderr)
+        if not _PROFILE_ID_RE.match(target):
+            print("ack: invalid profile id", file=sys.stderr)
             return 1
-        wm[target] = la
-        _save_watermark(wm)
+        with _watermark_lock():
+            wm = _load_watermark() or {}
+            la = next((b["last_activity"] or 0 for b in bots if b["profile"] == target), None)
+            if la is None:
+                print(f"ack: unknown profile {target}", file=sys.stderr)
+                return 1
+            wm[target] = la
+            _save_watermark(wm)
         print(f"acked {target} at {la}")
         return 0
 
-    wm = _load_watermark()
-    if wm is None:
-        # First run: initialize the watermark to current activity WITHOUT
-        # flagging — deploying must not light up every bot at once.
-        wm = {b["profile"]: b["last_activity"] or 0 for b in bots}
-        _save_watermark(wm)
+    # The read-compute-write of has_new is part of the same serialized
+    # section: without the lock, an ack landing between the read and the
+    # first-run init write would be erased (P3.12).
+    with _watermark_lock():
+        wm = _load_watermark()
+        if wm is None:
+            # First run: initialize the watermark to current activity WITHOUT
+            # flagging — deploying must not light up every bot at once.
+            wm = {b["profile"]: b["last_activity"] or 0 for b in bots}
+            _save_watermark(wm)
+            initialized = True
+        else:
+            initialized = False
+
+    if initialized:
         for b in bots:
             b["has_new"] = False
     else:
