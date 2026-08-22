@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -85,6 +86,11 @@ Panel {
   property double receivedAt: 0
   property double nowTick: 0
   readonly property bool stale: generated === 0 || (nowTick - receivedAt > 900)
+
+  // Row height for the roster panel (visual audit F9: 44 was too loose for
+  // this density; 40 keeps the message line comfortable, matching the
+  // audit's recommendation for message-bearing rows).
+  readonly property real panelRowH: 40
 
   // --- keyboard cursor ---------------------------------------------------
   property int selectedIndex: 0
@@ -356,16 +362,29 @@ Panel {
   // accent key, same source as the app's garnish) appears on STATE fills
   // (panel row selection, badge chips), not on label text: accent-as-text
   // measures 3.16:1 under the active theme vs 11.27:1 for foreground.
-  readonly property string labelText: {
-    if (sshTarget === "") return "⚔ ⚠"
-    if (!validTarget) return "⚔ ⚠"
-    if (bots.length === 0) return "⚔ –"
-    var label = `⚔ ${bots.length}`
+  // Layer 1 (visual audit F5/F6): the mark + the count. The Unicode ⚔ fell
+  // through to a color-font fallback (silver/blue pixels) while every
+  // neighbor is a monochrome amber silhouette — the one detail that read
+  // third-party. The bar now paints the Botmarchy silhouette (white mask
+  // asset, tinted to the bar's own text color) at the house 13px-in-16px
+  // optical scale, and the count sets bodySmall (11px) beside the 12px body
+  // labels around it. State extras (working ⚙, unread ✦) stay — they render
+  // monochrome from the bar font.
+  readonly property string countText: {
+    if (sshTarget === "" || !validTarget) return "⚠"
+    if (bots.length === 0) return "–"
+    var label = `${bots.length}`
     if (workingCount > 0) label += ` · ${workingCount} ⚙`
     if (unreadCount > 0) label += ` · ${unreadCount} ✦`
     return label
   }
 
+  // Layer 2 (visual audit F1-F4, codex Option 1 — maintainer approved): the
+  // hover used to dump the whole roster with per-bot message excerpts plus a
+  // three-action mouse legend through the shared centered tooltip (measured
+  // 691×119 logical px — 43% of the screen, 4.6× the bar height, centered so
+  // nothing formed columns). Names and messages live one click away in the
+  // panel; hover answers one question: how is the court?
   readonly property string tooltipText: {
     if (sshTarget === "") {
       return ["Botmarchy Muster — not configured", "",
@@ -375,15 +394,13 @@ Panel {
       return ["Botmarchy Muster — invalid sshTarget", "",
         `“${sshTarget}” is not [user@]host[:port] in the safe charset.`, "Fix it in shell.json or ~/.config/botmarchy/muster.json."].join("\n")
     }
-    var lines = ["Botmarchy — bot roster  ·  " + (stale ? "stale" : "live")]
-    for (var i = 0; i < bots.length; i++) {
-      var b = bots[i]
-      lines.push(`${b.working ? "▶" : "●"} ${b.name} — ${b.last_message || "no messages"}`)
-    }
-    if (bots.length === 0) lines.push("(no bots on the gateway yet)")
-    lines.push("─")
-    lines.push("click: roster · middle-click: jump to Botmarchy · right-click: refresh")
-    return lines.join("\n")
+    var state
+    if (stale) state = "status stale"
+    else if (bots.length === 0) state = "no bots yet"
+    else if (unreadCount > 0) state = `${unreadCount} new · ${bots.length} bots`
+    else if (workingCount > 0) state = `${workingCount} working · ${bots.length} total`
+    else state = `${bots.length} bots · all idle`
+    return `Botmarchy · ${state}\nClick to open roster`
   }
 
   visible: true
@@ -395,8 +412,14 @@ Panel {
 
     anchors.fill: parent
     bar: root.bar
-    text: root.labelText
-    fontSize: Style.font.caption
+    // Text stays non-empty so WidgetButton's hasVisualContent/opacity
+    // machinery keeps the slot alive (and its dim Behavior applies to
+    // everything below); the label itself is hidden and the composite row
+    // is what paints. fixedWidth measures the ROW, not the hidden text.
+    text: root.countText
+    labelVisible: false
+    fixedWidth: compositeRow.implicitWidth + button.scaledHorizontalMargin * 2
+    fontSize: Style.font.bodySmall
     horizontalMargin: 6
     // Brightness = freshness, not activity (PB-8 A1): the court's healthy
     // IDLE state is the common case and must read at full weight — dim only
@@ -414,6 +437,50 @@ Panel {
         root.toggle()
       }
     }
+
+    // The painted label: masked brand mark (tinted to the bar text color —
+    // same MultiEffect technique the first-party tray uses) + count, both
+    // vertically centered, 4px apart. Monochrome, per the icon grammar.
+    Row {
+      id: compositeRow
+
+      anchors.centerIn: parent
+      spacing: Style.space(4)
+
+      Item {
+        width: Style.space(16)
+        height: Style.space(16)
+        anchors.verticalCenter: parent.verticalCenter
+
+        Image {
+          id: markImage
+
+          anchors.centerIn: parent
+          width: 13
+          height: 13
+          fillMode: Image.PreserveAspectFit
+          mipmap: true
+          source: Qt.resolvedUrl("assets/botmarchy-mark-mask.png")
+          visible: false
+        }
+
+        MultiEffect {
+          anchors.fill: markImage
+          source: markImage
+          autoPaddingEnabled: false
+          colorization: 1.0
+          colorizationColor: root.bar ? root.bar.barForeground : Color.foreground
+        }
+      }
+
+      Text {
+        text: root.countText
+        color: root.bar ? root.bar.barForeground : Color.foreground
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
   }
 
   // --- layer 3: the roster panel ---------------------------------------------
@@ -426,7 +493,19 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(420))
-    contentHeight: panel.fittedContentHeight(rosterColumn.implicitHeight + Style.space(24), Style.space(520))
+    // Explicit content math (visual audit F7): the old fill/implicit height
+    // cycle ballooned the panel to its 520px cap with four rows and pushed
+    // the footer below the fold. Height = header + body + footer + gaps;
+    // long courts scroll inside the capped flickable instead.
+    contentHeight: {
+      const gap = Style.space(4)
+      const header = headerRow.implicitHeight
+      const footer = footerText.implicitHeight
+      const body = root.bots.length > 0
+        ? Math.min(root.bots.length * (root.panelRowH + gap), Style.space(360))
+        : emptyState.implicitHeight
+      return panel.fittedContentHeight(header + gap + body + gap + footer + Style.space(12), Style.space(520))
+    }
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -467,6 +546,8 @@ Panel {
             mipmap: true
           }
           Text {
+            id: panelTitle
+
             text: "Botmarchy"
             color: Color.popups.text
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -474,11 +555,14 @@ Panel {
             font.bold: true
           }
           Text {
+            // F8 (visual audit): metadata anchors to the TITLE's baseline —
+            // `parent.baseline` anchored to the Row and floated the count
+            // on a separate upper baseline.
             text: root.stale ? "stale" : `${root.bots.length} bots · ${root.workingCount} working`
             color: root.dim
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.bodySmall
-            anchors.baseline: parent.baseline
+            anchors.baseline: panelTitle.baseline
           }
         }
 
@@ -488,8 +572,15 @@ Panel {
           id: rosterFlick
 
           clip: true
+          visible: root.bots.length > 0
           width: parent.width
-          height: rosterColumn.height - headerRow.height - Style.space(4)
+          // Viewport (visual audit F7): everything the panel content height
+          // leaves after the header and the RESERVED footer — the footer
+          // used to be pushed below the fold by a flickable that ate the
+          // whole column.
+          height: Math.min(
+            root.bots.length * (root.panelRowH + Style.space(4)),
+            rosterColumn.height - headerRow.implicitHeight - footerText.implicitHeight - Style.space(8))
           contentWidth: width
           contentHeight: rosterRows.implicitHeight + Style.space(4)
           interactive: true
@@ -497,7 +588,7 @@ Panel {
           // Follow the selection: whenever the cursor moves past the visible
           // band, scroll it into view (top-weighted like every list).
           function followSelection() {
-            const row = Style.space(44) + Style.space(4)
+            const row = root.panelRowH + Style.space(4)
             const y = root.selectedIndex * row
             if (y < contentY) contentY = y
             else if (y + row > contentY + height - Style.space(4)) contentY = y + row - height + Style.space(4)
@@ -517,7 +608,7 @@ Panel {
               required property int index
 
               width: parent.width
-              height: Style.space(44)
+              height: root.panelRowH
               radius: Style.cornerRadius
               color: mouse.hovered || (root.cursorActive && root.selectedIndex === index)
                 ? Style.selectedFillFor(Color.popups.text, Color.accent)
@@ -600,33 +691,29 @@ Panel {
           }
         }
 
-        // empty / unconfigured states
+        // Empty / unconfigured states — one id'd Text (visual audit F7: the
+        // panel height math needs a measurable block, and exactly one of
+        // these states can be visible at a time).
         Text {
-          visible: root.sshTarget === ""
+          id: emptyState
+
+          visible: root.sshTarget === "" || !root.validTarget || root.bots.length === 0
           width: parent.width
           wrapMode: Text.WordWrap
           color: root.dim
           font.pixelSize: Style.font.bodySmall
-          text: "Not configured. Set sshTarget in shell.json (omarchy bar set dev.botmarchy.muster sshTarget user@host), or run botmarchy-muster once to answer setup."
-        }
-        Text {
-          visible: root.sshTarget !== "" && !root.validTarget
-          width: parent.width
-          wrapMode: Text.WordWrap
-          color: root.dim
-          font.pixelSize: Style.font.bodySmall
-          text: "Invalid sshTarget — expected [user@]host[:port] with letters, digits, dots, dashes, underscores. Fix it in shell.json or ~/.config/botmarchy/muster.json."
-        }
-        Text {
-          visible: root.sshTarget !== "" && root.bots.length === 0
-          width: parent.width
-          color: root.dim
-          font.pixelSize: Style.font.bodySmall
-          text: "No bots on the gateway yet — open Botmarchy to create one."
+          text: root.sshTarget === ""
+            ? "Not configured. Set sshTarget in shell.json (omarchy bar set dev.botmarchy.muster sshTarget user@host), or run botmarchy-muster once to answer setup."
+            : !root.validTarget
+              ? "Invalid sshTarget — expected [user@]host[:port] with letters, digits, dots, dashes, underscores. Fix it in shell.json or ~/.config/botmarchy/muster.json."
+              : "No bots on the gateway yet — open Botmarchy to create one."
         }
 
-        // footer hint
+        // Footer hint (visual audit F7: reserved height — it was clipped
+        // below the fold; the flickable viewport now subtracts it).
         Text {
+          id: footerText
+
           width: parent.width
           color: root.dim
           font.pixelSize: Style.font.caption
